@@ -1,0 +1,394 @@
+import javax.swing.*; 
+import java.awt.*; 
+import java.awt.event.*; 
+import java.awt.geom.*; 
+import java.awt.image.*; 
+import java.io.File;
+import java.io.IOException;
+import javax.imageio.ImageIO;
+import java.util.ArrayList;
+
+// ------------------------ Клас літака ворога (колишня "цеглинка") ------------------------
+class EnemyPlane extends Rectangle2D.Float { 
+    boolean isVisible = true; 
+    Image image;  // зображення літака
+
+    EnemyPlane(float x, float y, int w, int h) { 
+        this.x = x; 
+        this.y = y; 
+        this.width = w; 
+        this.height = h; 
+
+        // Завантажуємо зображення літака
+        // Переконайтеся, що "planeEnemy.png" існує в каталозі вашого проєкту
+        BufferedImage originalImage = loadImage("enemy.png");
+        if (originalImage != null) {
+            BufferedImage rotatedImage = rotateImage180(originalImage);
+            this.image = rotatedImage;
+        } else {
+            // Якщо зображення не вдалося завантажити
+            this.image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g2d = ((BufferedImage)this.image).createGraphics();
+            g2d.setColor(Color.BLUE);
+            g2d.fillRect(0, 0, w, h);
+            g2d.dispose();
+        }
+
+    } 
+
+    private BufferedImage loadImage(String path) {
+        try {
+            return ImageIO.read(new File(path));
+        } catch(IOException e) {
+            System.err.println("Не вдалося завантажити зображення: " + path);
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+// Метод для обертання зображення на 180 градусів
+    private BufferedImage rotateImage180(BufferedImage src) {
+        AffineTransform transform = new AffineTransform();
+        // Обертання на 180 градусів навколо центру зображення
+        transform.rotate(Math.toRadians(180), src.getWidth() / 2.0, src.getHeight() / 2.0);
+        AffineTransformOp op = new AffineTransformOp(transform, AffineTransformOp.TYPE_BILINEAR);
+        BufferedImage rotated = op.filter(src, null);
+        return rotated;
+    }
+    // Малювання літака
+    void draw(Graphics2D g2d) {
+        g2d.drawImage(image, (int)x, (int)y, (int)width, (int)height, null);
+    }
+}
+
+// ------------------------ Клас "корабля" (Belka) ------------------------
+class Belka extends Rectangle2D.Float { 
+    Image image;
+    float x, y;
+    int width;
+    int height;
+    
+    Belka(float x, float y) { 
+        this.x = x; 
+        this.y = y; 
+        this.width = 70; 
+        this.height = 70; 
+       
+        this.image = new ImageIcon("plane.png").getImage();
+    } 
+
+    void setX(float x) { 
+        this.x = x; 
+    } 
+
+    void draw(Graphics2D g2d) {
+        g2d.drawImage(image, (int) x, (int) y, width, height, null);
+    }
+}
+
+// ------------------------ Клас Bullet (куля-снаряд) ------------------------
+class Bullet extends Ellipse2D.Float {
+    private Plansza p;
+    private double dx, dy;
+    
+    public Bullet(Plansza p, double startX, double startY, double dx, double dy) {
+        this.p = p;
+        this.x = (float) startX;
+        this.y = (float) startY;
+        this.width = 8;  // діаметр кулі
+        this.height = 8;
+        this.dx = dx;
+        this.dy = dy;
+    }
+    
+    public void move() {
+        // Рух кулі
+        x += dx;
+        y += dy;
+        
+        // Якщо снаряд вилетів за межі - видаляємо його
+        if (getMaxY() < 0 || getMinX() < 0 || getMaxX() > p.getWidth() || getMaxY() > p.getHeight()) {
+            p.removeBullet(this);
+            return;
+        }
+        
+        // Перевірка зіткнень з "літаками" (раніше "цеглинками")
+        for (EnemyPlane plane : p.enemyPlanes) {
+            if (plane.isVisible && this.intersects(plane)) {
+                plane.isVisible = false;
+                p.incrementScore();
+                // Видаляємо кулю при влучанні
+                p.removeBullet(this);
+                return;
+            }
+        }
+        // Перемальовуємо
+        p.repaint();
+    }
+}
+
+// ------------------------ Клас Plansza (ігрове поле) ------------------------
+class Plansza extends JPanel implements MouseMotionListener, MouseListener { 
+    Belka b;                            // Корабель
+    ArrayList<EnemyPlane> enemyPlanes;  // Замість cegielki
+    ArrayList<Bullet> bullets;          // список усіх снарядів
+
+    int score = 0; 
+    long lastHitTime = 0; 
+    int comboCount = 0; 
+    boolean gameOver = false; 
+    int currentLevel = 1; 
+    final int maxLevels = 3; 
+    int bricksInLevel; 
+    int bricksDestroyed = 0; 
+    Image backgroundImage;
+    
+    // Таймер для безперервної стрільби
+    private Timer shootingTimer;   
+    private static final int SHOOT_DELAY = 200; // мс (як часто випускати кулю)
+    
+    // Таймер для оновлення снарядів
+    private Timer gameTimer; 
+    private static final int GAME_DELAY = 15; // мс (частота оновлення снарядів)
+
+    Plansza() { 
+        super(); 
+        addMouseMotionListener(this); 
+        addMouseListener(this); 
+        setLayout(null); 
+        backgroundImage = loadImage("background.jpg"); 
+
+        // Створюємо корабель
+        b = new Belka(150, 380);
+
+        // Ініціалізуємо списки
+        enemyPlanes = new ArrayList<>(); 
+        bullets = new ArrayList<>(); 
+
+        // Ініціалізуємо таймер для стрільби
+        // кожні SHOOT_DELAY мс викликатиметься shootBullet()
+        shootingTimer = new Timer(SHOOT_DELAY, e -> shootBullet());
+
+        // Ініціалізуємо таймер для оновлення снарядів
+        gameTimer = new Timer(GAME_DELAY, e -> updateBullets());
+        gameTimer.start();
+
+        initializeLevel(currentLevel); 
+    } 
+
+    // Метод для завантаження зображення фону
+    private Image loadImage(String path) {
+        try {
+            return ImageIO.read(new File(path));
+        } catch(IOException e) {
+            System.err.println("Не вдалося завантажити зображення: " + path);
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    // Ініціалізація рівня (розташування "літаків" замість цеглин)
+    private void initializeLevel(int level) { 
+        enemyPlanes.clear(); 
+        bricksDestroyed = 0; 
+        int rows, cols; 
+        int planeWidth = 40; 
+        int planeHeight = 30; 
+        int startX = 20; 
+        int startY = 40; 
+        int gap = 5; 
+
+        // Ви можете змінити rows/cols для різних рівнів
+        switch (level) { 
+            case 1:  rows = 4; cols = 8;  break; 
+            case 2:  rows = 5; cols = 9;  break; 
+            case 3:  rows = 6; cols = 10; break; 
+            default: rows = 4; cols = 8; 
+        } 
+
+        for (int r = 0; r < rows; r++) { 
+            for (int c = 0; c < cols; c++) { 
+                float x = startX + c * (planeWidth + gap); 
+                float y = startY + r * (planeHeight + gap); 
+                // Створюємо "ворожий літак"
+                enemyPlanes.add(new EnemyPlane(x, y, planeWidth, planeHeight));
+            } 
+        }
+        bricksInLevel = rows * cols; 
+
+        // Скидаємо лічильники/позицію
+        comboCount = 0; 
+        lastHitTime = 0; 
+        b.x = 150; 
+        b.y = 380;
+        gameOver = false;
+    } 
+
+    // Створює і додає нову кулю
+    private void shootBullet() {
+        float startX = b.x + b.width / 2f - 4;
+        float startY = b.y;
+        // Куля летить вгору з швидкістю -5
+        Bullet bullet = new Bullet(this, startX, startY, 0, -5);
+        addBullet(bullet);
+    }
+
+    // Оновлює всі кулі
+    private void updateBullets() {
+        // Створюємо копію списку, щоб уникнути ConcurrentModificationException
+        ArrayList<Bullet> bulletsCopy = new ArrayList<>(bullets);
+        for (Bullet bullet : bulletsCopy) {
+            bullet.move();
+        }
+        repaint();
+    }
+
+    // Метод збільшення рахунку (при знищенні літака)
+    void incrementScore() { 
+        long now = System.currentTimeMillis(); 
+        if (now - lastHitTime <= 1000) { 
+            comboCount++; 
+        } else { 
+            comboCount = 1; 
+        } 
+        lastHitTime = now; 
+        score += comboCount; 
+        bricksDestroyed++; 
+
+        // Якщо всі "літаки" знищені – наступний рівень або завершення гри
+        if (bricksDestroyed >= bricksInLevel) { 
+            if (currentLevel < maxLevels) { 
+                currentLevel++; 
+                initializeLevel(currentLevel); 
+            } else { 
+                gameOver = true; 
+                // Закриємо вікно через 5 секунд (необов’язково)
+                Timer timer = new Timer(5000, e -> { 
+                    JFrame parentFrame = (JFrame) SwingUtilities.getWindowAncestor(this); 
+                    parentFrame.dispose(); 
+                }); 
+                timer.setRepeats(false); 
+                timer.start(); 
+            } 
+        } 
+    } 
+
+    // Додаємо кулю-снаряд у список
+    public void addBullet(Bullet b) {
+        bullets.add(b);
+    }
+    
+    // Видаляємо кулю-снаряд зі списку
+    public void removeBullet(Bullet b) {
+        bullets.remove(b);
+    }
+
+    // Метод малювання
+    public void paintComponent(Graphics g) { 
+        super.paintComponent(g); 
+        if (backgroundImage != null) { 
+            g.drawImage(backgroundImage, 0, 0, getWidth(), getHeight(), this); 
+        } 
+        Graphics2D g2d = (Graphics2D) g.create(); 
+
+        // Малюємо "корабель"
+        b.draw(g2d);
+        
+        // Малюємо ворожі літаки
+        for (EnemyPlane plane : enemyPlanes) {
+            if (plane.isVisible) {
+                plane.draw(g2d); 
+            }
+        }
+
+        // Малюємо кулі-снаряди (bullets)
+        g2d.setColor(Color.RED);
+        for (Bullet bullet : bullets) {
+            g2d.fill(bullet);
+        }
+
+        // Відображаємо рахунок, рівень
+        g2d.setColor(Color.BLACK); 
+        g2d.setFont(new Font("Arial", Font.BOLD, 16)); 
+        g2d.drawString("Punkty: " + score, 10, 20); 
+        g2d.drawString("Poziom: " + currentLevel, 10, 40); 
+        
+        // Повідомлення, якщо гру пройшли
+        if (gameOver) { 
+            g2d.setFont(new Font("Arial", Font.BOLD, 40)); 
+            g2d.setColor(Color.RED); 
+            String msg = "ВИ ПЕРЕМОГЛИ! Ви набрали " + score + " очок"; 
+            FontMetrics fm = g2d.getFontMetrics(); 
+            int msgWidth = fm.stringWidth(msg); 
+            int x = (getWidth() - msgWidth) / 2; 
+            int y = getHeight() / 2; 
+            g2d.drawString(msg, x, y); 
+        } 
+        g2d.dispose(); 
+    } 
+
+    // Рух миші – рухається "корабель"
+    public void mouseMoved(MouseEvent e) { 
+        float newX = e.getX() - (b.width / 2.0f); 
+        if (newX < 0) newX = 0; 
+        if (newX + b.width > getWidth()) { 
+            newX = getWidth() - b.width; 
+        } 
+        b.setX(newX); 
+        repaint(); 
+    } 
+
+    public void mouseDragged(MouseEvent e) {
+        // Викликаємо той самий метод, що й у mouseMoved
+        mouseMoved(e);
+    }
+
+    // Натиснули кнопку – запускаємо безперервну стрільбу (таймер)
+    @Override
+    public void mousePressed(MouseEvent e) {
+        shootingTimer.start();
+    }
+    
+    // Відпустили кнопку – зупиняємо стрільбу
+    @Override
+    public void mouseReleased(MouseEvent e) {
+        shootingTimer.stop();
+    }
+
+    // Інші методи MouseListener (порожні, бо нам не потрібні)
+    @Override public void mouseClicked(MouseEvent e) {}
+    @Override public void mouseEntered(MouseEvent e) {}
+    @Override public void mouseExited(MouseEvent e) {}
+}
+
+// ------------------------ Головний клас з main() ------------------------
+public class Project { 
+    public static void main(String[] args) { 
+        SwingUtilities.invokeLater(() -> { 
+            Plansza p = new Plansza(); 
+            JFrame jf = new JFrame(); 
+            jf.add(p); 
+            jf.setTitle("Безперервна стрільба (літаки замість цеглин)"); 
+            jf.setSize(600, 500); 
+            jf.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE); 
+            jf.setVisible(true); 
+        }); 
+    } 
+}
+
+
+    private BufferedImage loadImage(String path) {
+        try {
+            return ImageIO.read(new File(path));
+        } catch (IOException e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private BufferedImage rotateImage180(BufferedImage src) {
+        AffineTransform transform = new AffineTransform();
+        transform.rotate(Math.toRadians(180), src.getWidth() / 2.0, src.getHeight() / 2.0);
+        AffineTransformOp op = new AffineTransformOp(transform, AffineTransformOp.TYPE_BILINEAR);
+        return op.filter(src, null);
+    }
